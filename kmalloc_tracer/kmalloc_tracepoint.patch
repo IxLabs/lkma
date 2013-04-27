@@ -1,0 +1,93 @@
+From 5fec4713df069b619b30e87855c5540e5f7d30b3 Mon Sep 17 00:00:00 2001
+From: Ghennadi Procopciuc <unix140@gmail.com>
+Date: Sat, 27 Apr 2013 14:36:18 +0300
+Subject: [PATCH] Kmalloc tracepoint
+
+Add a new tracepoint to kmalloc function that saves source [filename] and size.
+
+Note :
+
++#ifdef DECLARE_TRACE
++   #undef DECLARE_TRACE
++   #define _LINUX_TRACEPOINT_H_ABSENT
++#endif
+The above code snippet from slub_def.h removes all declarations
+DECLARE_TRACE, because it can be defined in two places, in two different ways :
+    o include/linux/tracepoint.h
+    o include/trace/define_trace.h
+
+The second definition expands to nothing, it's obvious in this case a
+compile error will occur, therefore we redefine it using declaration
+from tracepoint.h.
+---
+ include/linux/slub_def.h |   14 +++++++++++++-
+ include/trace/mm.h       |    8 ++++++++
+ mm/slub.c                |    4 ++++
+ 3 files changed, 25 insertions(+), 1 deletions(-)
+ create mode 100644 include/trace/mm.h
+
+diff --git a/include/linux/slub_def.h b/include/linux/slub_def.h
+index 9db4825..820e875 100644
+--- a/include/linux/slub_def.h
++++ b/include/linux/slub_def.h
+@@ -271,8 +271,17 @@ static __always_inline void *kmalloc_large(size_t size, gfp_t flags)
+ 	return kmalloc_order_trace(size, flags, order);
+ }
+ 
+-static __always_inline void *kmalloc(size_t size, gfp_t flags)
++#ifdef DECLARE_TRACE
++#undef DECLARE_TRACE
++#define _LINUX_TRACEPOINT_H_ABSENT
++#endif
++#include <trace/mm.h>
++#define kmalloc(size, flags) kmalloc_mod(size, flags, __FILE__)
++
++static __always_inline void *kmalloc_mod(size_t size, gfp_t flags,
++                                         const char *file)
+ {
++	trace_mm_my_kmalloc_trace(file, size);
+ 	if (__builtin_constant_p(size)) {
+ 		if (size > SLUB_MAX_SIZE)
+ 			return kmalloc_large(size, flags);
+@@ -288,6 +297,9 @@ static __always_inline void *kmalloc(size_t size, gfp_t flags)
+ 	}
+ 	return __kmalloc(size, flags);
+ }
++#ifdef _LINUX_TRACEPOINT_H_ABSENT
++#undef _LINUX_TRACEPOINT_H_ABSENT
++#endif
+ 
+ #ifdef CONFIG_NUMA
+ void *__kmalloc_node(size_t size, gfp_t flags, int node);
+diff --git a/include/trace/mm.h b/include/trace/mm.h
+new file mode 100644
+index 0000000..17674a2
+--- /dev/null
++++ b/include/trace/mm.h
+@@ -0,0 +1,8 @@
++#ifndef MY_MM_TRACE_KMALLOC
++#define MY_MM_TRACE_KMALLOC     1
++#include <linux/tracepoint.h>
++
++DECLARE_TRACE(mm_my_kmalloc_trace,
++           TP_PROTO(const char *filename, size_t size),
++           TP_ARGS(filename, size));
++#endif
+diff --git a/mm/slub.c b/mm/slub.c
+index 4aec537..76814f3e2 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -36,6 +36,10 @@
+ #include <trace/events/kmem.h>
+ 
+ #include "internal.h"
++#include <trace/mm.h>
++
++DEFINE_TRACE(mm_my_kmalloc_trace);
++EXPORT_TRACEPOINT_SYMBOL(mm_my_kmalloc_trace);
+ 
+ /*
+  * Lock order:
+-- 
+1.7.5.4
+
