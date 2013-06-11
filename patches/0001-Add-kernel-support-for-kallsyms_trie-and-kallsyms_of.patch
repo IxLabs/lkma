@@ -1,0 +1,275 @@
+From 54f4ab8eef3a9ab2fb09cdd63ce5695077ac2219 Mon Sep 17 00:00:00 2001
+From: Ghennadi Procopciuc <unix140@gmail.com>
+Date: Tue, 11 Jun 2013 12:07:21 +0300
+Subject: [PATCH] Add the kernel support for kallsyms_trie and kallsyms_offsets
+
+---
+ include/linux/kallsyms.h |   26 ++++++
+ kernel/kallsyms.c        |  193 ++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 219 insertions(+), 0 deletions(-)
+
+diff --git a/include/linux/kallsyms.h b/include/linux/kallsyms.h
+index 6883e19..7eb3fed 100644
+--- a/include/linux/kallsyms.h
++++ b/include/linux/kallsyms.h
+@@ -19,6 +19,15 @@ struct module;
+ /* Lookup the address for a symbol. Returns 0 if not found. */
+ unsigned long kallsyms_lookup_name(const char *name);
+ 
++/* Signal memory allocation from a function */
++void kallsyms_add_memory(unsigned long old_address, size_t size);
++
++/* Check if funct1 and funct2 are defined in same file */
++bool kallsyms_same_file(unsigned long func1, unsigned long func2);
++
++/* Check if function belongs to mm tree */
++bool from_mm_tree(unsigned long file_offset);
++
+ /* Call a function on each kallsyms symbol in the core kernel */
+ int kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *,
+ 				      unsigned long),
+@@ -52,6 +61,23 @@ static inline unsigned long kallsyms_lookup_name(const char *name)
+ 	return 0;
+ }
+ 
++static inline void kallsyms_add_memory(unsigned long old_address, size_t size)
++{
++	return 0;
++}
++
++
++bool from_mm_tree(unsigned long file_offset)
++{
++	return false;
++}
++
++static inline bool kallsyms_same_file(unsigned long func1, unsigned long func2)
++{
++	return false;
++}
++
++
+ static inline int kallsyms_on_each_symbol(int (*fn)(void *, const char *,
+ 						    struct module *,
+ 						    unsigned long),
+diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
+index 3127ad5..7664e3c 100644
+--- a/kernel/kallsyms.c
++++ b/kernel/kallsyms.c
+@@ -39,12 +39,18 @@
+ extern const unsigned long kallsyms_addresses[] __attribute__((weak));
+ extern const u8 kallsyms_names[] __attribute__((weak));
+ 
++extern u8 kallsyms_trie[] __attribute__((weak));
++EXPORT_SYMBOL(kallsyms_trie);
++extern const unsigned long kallsyms_offsets[] __attribute__((weak));
++EXPORT_SYMBOL(kallsyms_offsets);
++
+ /*
+  * Tell the compiler that the count isn't in the small data section if the arch
+  * has one (eg: FRV).
+  */
+ extern const unsigned long kallsyms_num_syms
+ __attribute__((weak, section(".rodata")));
++EXPORT_SYMBOL(kallsyms_num_syms);
+ 
+ extern const u8 kallsyms_token_table[] __attribute__((weak));
+ extern const u16 kallsyms_token_index[] __attribute__((weak));
+@@ -192,6 +198,193 @@ unsigned long kallsyms_lookup_name(const char *name)
+ }
+ EXPORT_SYMBOL_GPL(kallsyms_lookup_name);
+ 
++static unsigned long get_symbol_pos(unsigned long addr,
++				    unsigned long *symbolsize,
++				    unsigned long *offset);
++
++/**
++ * kallsyms_same_file - Test if two functions are defined in the same file
++ * @func1:  First function address
++ * @func2:  Second function address
++ *
++ * Return:
++ * true - if both functions are defined in the same file
++ * false - otherwise
++ */
++bool kallsyms_same_file(unsigned long func1, unsigned long func2)
++{
++	unsigned long address1;
++	unsigned long address2;
++	unsigned long pos1;
++	unsigned long pos2;
++
++	address1 = (unsigned long)dereference_function_descriptor((void *)func1);
++	address2 = (unsigned long)dereference_function_descriptor((void *)func2);
++
++	if (is_ksym_addr(address1) && is_ksym_addr(address2)) {
++		pos1 = get_symbol_pos(address1, NULL, NULL);
++		pos2 = get_symbol_pos(address2, NULL, NULL);
++
++		if (pos1 >= kallsyms_num_syms) {
++			printk(KERN_ALERT "[%s] ERROR ! Position is greatter "
++			       "than kallsyms_num_syms %lu VS %lu\n", __func__,
++			       pos1, kallsyms_num_syms);
++			return false;
++		}
++
++		if (pos2 >= kallsyms_num_syms) {
++			printk(KERN_ALERT "[%s] ERROR ! Position is greatter "
++			       "than kallsyms_num_syms %lu VS %lu\n", __func__,
++			       pos2, kallsyms_num_syms);
++			return false;
++		}
++
++		return ((unsigned long *)kallsyms_offsets)[pos1] ==
++		    ((unsigned long *)kallsyms_offsets)[pos2];
++	}
++
++	return false;
++}
++
++/* Get fields from trie node @see trie serialization */
++#define trie_size_node(node)\
++	(*(unsigned long *)(node))
++
++#define trie_filename_node(node)\
++	((char *)((char *)(node) + sizeof(unsigned long)))
++
++#define trie_parent_node(node)\
++	(*(unsigned long *)((char *)(node) + sizeof(unsigned long) + \
++		       strlen(trie_filename_node(node)) + 1))
++
++#define trie_children_num_node(node)\
++	(*(unsigned long *)((char *)(node) + sizeof(unsigned long) + \
++		       strlen(trie_filename_node(node)) + 1 + \
++		       sizeof(unsigned long)))
++
++#define trie_children_node(node)\
++	((unsigned long *)((char *)(node) + sizeof(unsigned long) + \
++		      strlen(trie_filename_node(node)) + 1 + \
++		      2 * sizeof(unsigned long)))
++
++/**
++ * from_mm_tree - Check if given address is a symbol defined in mm subtree of
++ *                the kernel sources.
++ * @function_address: Function address
++ *
++ * Return:
++ * true - if function was found in mm subtree
++ * false - otherwise
++ */
++bool from_mm_tree(unsigned long function_address)
++{
++	static unsigned long mm_offset;
++	static unsigned long arch_mm_offset;
++	unsigned long file_offset = 0;
++	unsigned long offset;
++	u8 *filename = NULL;
++
++	unsigned long address;
++	unsigned long pos = 0;
++
++	address = (unsigned long)dereference_function_descriptor(
++	    (void *)function_address);
++
++	if (is_ksym_addr(address)) {
++		pos = get_symbol_pos(address, NULL, NULL);
++
++		if (pos >= kallsyms_num_syms) {
++			printk(KERN_ALERT "[%s] Position is greatter than "
++			       "kallsyms_num_syms %lu VS %lu\n", __func__,
++			       pos, kallsyms_num_syms);
++			return false;
++		}
++
++		file_offset = ((unsigned long *)kallsyms_offsets)[pos];
++	}
++
++	/* Function not found */
++	if (file_offset == 0)
++		return false;
++
++	offset = file_offset;
++	if (mm_offset == 0 || arch_mm_offset == 0) {
++		while (offset != 0) {
++			filename = trie_filename_node(kallsyms_trie + offset);
++			if (strcmp(filename, "mm") == 0) {
++				if (mm_offset == 0) {
++					mm_offset = offset;
++				} else {
++					if (arch_mm_offset == 0 &&
++					   mm_offset != offset)
++						arch_mm_offset = offset;
++				}
++				return true;
++			}
++
++			offset = trie_parent_node(kallsyms_trie + offset);
++		}
++		return false;
++	} else {
++		while (offset != 0) {
++			if (offset == mm_offset || offset == arch_mm_offset)
++				return true;
++
++			offset = trie_parent_node(kallsyms_trie + offset);
++		}
++	}
++	return false;
++}
++
++/**
++ * kallsyms_add_memory - counts dynamically allocated memory for a file
++ * @function_address: function address, caller
++ * @size:             allocated size
++ *
++ * This function adds @size to the node from the trie where function
++ * @function_address was defined.
++ */
++void kallsyms_add_memory(unsigned long function_address, size_t size)
++{
++	unsigned long address;
++	unsigned long pos = 0;
++	unsigned long offset;
++
++	address = (unsigned long)dereference_function_descriptor(
++	    (void *)function_address);
++
++	if (is_ksym_addr(address)) {
++		pos = get_symbol_pos(address, NULL, NULL);
++
++		if (pos >= kallsyms_num_syms) {
++			printk(KERN_ALERT "[%s] Position is greatter than "
++			       "kallsyms_num_syms %lu VS %lu\n", __func__,
++			       pos, kallsyms_num_syms);
++			return;
++		}
++
++		/* Get the node from trie */
++		offset = ((unsigned long *)kallsyms_offsets)[pos];
++		if (*((long unsigned *)(kallsyms_trie + offset)) + size < 0) {
++			printk(KERN_ALERT "[%s] ERROR ! File : %s, size = %ld",
++			       __func__,
++			       trie_filename_node(kallsyms_trie + offset),
++			       trie_size_node(kallsyms_trie + offset) + size);
++		}
++
++		if (size < 0)
++			if (-size > trie_size_node(kallsyms_trie + offset))
++				printk(KERN_ALERT "[%s] ERROR ! File : %s, "
++				       "size = %ld", __func__,
++				       trie_filename_node(kallsyms_trie + offset),
++				       trie_size_node(kallsyms_trie + offset) + size);
++
++		atomic_add(size, (atomic_t *)(kallsyms_trie + offset));
++	} else {
++		module_add_memory(function_address, size);
++	}
++}
++EXPORT_SYMBOL(kallsyms_add_memory);
++
+ int kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *,
+ 				      unsigned long),
+ 			    void *data)
+-- 
+1.7.1
+

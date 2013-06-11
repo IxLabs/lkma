@@ -1,0 +1,543 @@
+From 9e6c1a5d01535300bf846aed59b4e0e81e06bfa4 Mon Sep 17 00:00:00 2001
+From: Ghennadi Procopciuc <unix140@gmail.com>
+Date: Tue, 11 Jun 2013 11:11:19 +0300
+Subject: [PATCH] Add kallsyms_trie and kallsyms_offsets
+
+Add source file for each symbol defined in kernel as an entry in array
+kallsyms_trie. Offset of nodes from kallsyms_trie are stored in
+kallsyms_offsets. The source file of symbols will be available only with enabled
+CONFIG_KALLSYMS and KALLSYMS_EXTRA_PASS options at compile time. If nm don't
+provide a source file for a symbol,  the source file for it will be "unknown"
+file. For more details about trie serialization please see the sources.
+---
+ scripts/kallsyms.c |  396 ++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 files changed, 386 insertions(+), 10 deletions(-)
+
+diff --git a/scripts/kallsyms.c b/scripts/kallsyms.c
+index 487ac6f..58e9668 100644
+--- a/scripts/kallsyms.c
++++ b/scripts/kallsyms.c
+@@ -27,13 +27,59 @@
+ #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
+ #endif
+ 
+-#define KSYM_NAME_LEN		128
++#define KSYM_NAME_LEN		    128
++
++#define UNKNOWN_FILE		    "unknown"
++#define UNKNOWN_FILE_LEN	    7
++#define FILE_NAMES		    1
++
++#define SIZE_SIZEOF		    sizeof(unsigned long)
++#define PARENT_SIZEOF		    sizeof(unsigned long)
++#define CHILDREN_SIZEOF		    sizeof(unsigned long)
++#define DEFAULT_ALLOCATION_SIZE	    10
++
++#define MAX(A, B) ((A) > (B) ? (A) : (B))
+ 
+ struct sym_entry {
+ 	unsigned long long addr;
+ 	unsigned int len;
+ 	unsigned int start_pos;
+ 	unsigned char *sym;
++	struct trie_node *node;
++};
++
++/**
++ * struct trie_node - Describe a node from a trie
++ * @data:         File name or directory name
++ * @parent:       Parent node
++ * @children:     Node children
++ * @children_num: Number of children
++ * @children_max: Maximum number of children, allocated size of @children
++ * @id:           Node id
++ * @offset:       Node offset in trie serialization [see below]
++ * @size:         Number of bytes allocated from this node, used only
++ *                by kallsyms_add_memory
++ *
++ * Serialized trie_node structure :
++ *
++ * size | data '\0' | parent | children_num | [children]*
++ *
++ * size         = unsigned long
++ * data         = char *
++ * parent       = unsigned long, offset of the parent node
++ * children_num = unsigned long
++ * children     = unsigned long, offset of the child node
++ * @see kallsyms_add_memory
++ **/
++struct trie_node {
++	char *data;
++	struct trie_node *parent;
++	struct trie_node **children;
++	unsigned long children_num;
++	unsigned long children_max;
++	unsigned long id;
++	unsigned long offset;
++	unsigned long size;
+ };
+ 
+ struct text_range {
+@@ -51,6 +97,9 @@ static struct text_range text_ranges[] = {
+ #define text_range_text     (&text_ranges[0])
+ #define text_range_inittext (&text_ranges[1])
+ 
++/* Trie which maintain kernel's files structure, each node describe a
++   file or a folder. */
++static struct trie_node *trie;
+ static struct sym_entry *table;
+ static unsigned int table_size, table_cnt;
+ static int all_symbols = 0;
+@@ -69,6 +118,289 @@ static void usage(void)
+ 	exit(1);
+ }
+ 
++/**
++ * dump_array - dumps an array in asm format, each char will be written as
++ *              a byte.
++ * @data:     Array that will be dumped
++ * @length:   Length of @data
++ */
++static void dump_array(unsigned char *data, int length)
++{
++	int i;
++	if (length > 0)
++		printf("\t.byte 0x%02x", data[0]);
++
++	for (i = 1; i < length; i++)
++		printf(", 0x%02x", data[i]);
++
++	printf("\n");
++}
++
++/**
++ * dump_trie - Prints trie serialization
++ * @trie:      Trie that will be serialized
++ **/
++static void dump_trie(struct trie_node *trie)
++{
++	int i;
++
++	if (trie == NULL)
++		return;
++
++	/* Write size */
++	dump_array((unsigned char *)&trie->size, SIZE_SIZEOF);
++
++
++	/* Write data */
++	if (trie->data != NULL)
++		dump_array((unsigned char *)trie->data, strlen(trie->data));
++
++	/* \0 means end of data field */
++	dump_array((unsigned char *)"\0", 1);
++
++	/* Write parent id */
++	if (trie->parent == NULL) {
++		printf("\t.byte 0x%02x", 0);
++		for (i = 1; i < PARENT_SIZEOF; i++)
++			printf(", 0x%02x", 0);
++		printf("\n");
++	} else
++		dump_array((unsigned char *)&trie->parent->offset,
++			   PARENT_SIZEOF);
++
++	/* Write number of children */
++	dump_array((unsigned char *)&trie->children_num, CHILDREN_SIZEOF);
++
++	/* Write children node id */
++	for (i = 0; i < trie->children_num; i++)
++		dump_array((unsigned char *)&trie->children[i]->offset,
++				   CHILDREN_SIZEOF);
++
++	printf("\n");
++
++	for (i = 0; i < trie->children_num; i++)
++		dump_trie(trie->children[i]);
++}
++
++/**
++ * trie_init - trie initialization
++ * @trie_node: address of trie
++ **/
++static int trie_init(struct trie_node **trie_node)
++{
++	if (trie_node == NULL)
++		return -1;
++
++	*trie_node = malloc(sizeof(**trie_node));
++
++	(*trie_node)->parent = NULL;
++	(*trie_node)->children = NULL;
++	(*trie_node)->children_num = 0;
++	(*trie_node)->children_max = 2;
++	(*trie_node)->id = -1;
++
++	return 0;
++}
++
++/**
++ * trie_add_path - adds a file path to the @trie
++ * @trie:   Root node of tree
++ * @path:   File path
++ */
++static struct trie_node *trie_add_path(struct trie_node *trie, char *path)
++{
++	const char *sep = "/";
++	char *token;
++	struct trie_node *current, *child;
++	int i;
++
++	if (!path)
++		return NULL;
++
++	current = trie;
++
++	while ((token = strsep(&path, sep))) {
++		if (*token == '\0')
++			continue;
++
++		for (i = 0, child = NULL; i < current->children_num; i++) {
++			child = current->children[i];
++			if (strcmp(token, child->data) == 0) {
++				current = child;
++				break;
++			}
++		}
++
++		/* token not found */
++		if (child != current) {
++			/* Create and add a new node */
++			struct trie_node *new_node;
++			trie_init(&new_node);
++
++			new_node->data = strdup(token);
++			new_node->size = 0;
++			new_node->parent = current;
++
++			if (current->children_num == 0) {
++				current->children = malloc(
++						current->children_max *
++						sizeof(*new_node));
++			}
++
++			if (current->children_max == current->children_num) {
++				current->children_max *= 2;
++				current->children = realloc(current->children,
++						current->children_max *
++						sizeof(*new_node));
++			}
++
++			current->children[current->children_num] = new_node;
++			current->children_num += 1;
++
++			current = new_node;
++		} else {
++			current->size = 0;
++		}
++	}
++
++	return current;
++}
++
++/**
++ * trie_destroy - releases memory allocated for trie
++ * @trie:      Address of root node of trie
++ **/
++static void trie_destroy(struct trie_node **trie)
++{
++	int i;
++
++	if (*trie == NULL)
++		return;
++
++	for (i = 0; i < (*trie)->children_num; i++)
++		trie_destroy(&(*trie)->children[i]);
++
++	free((*trie)->data);
++	free((*trie)->children);
++	free(*trie);
++}
++
++
++/**
++ * trie_index_update - sets ids for all nodes from trie in DFS manner
++ * @trie:     Trie
++ * @start_id: Start id.
++ */
++static int trie_index_update(struct trie_node *trie, int start_id)
++{
++	int i;
++	int next_id = start_id + 1;
++	int child_id;
++
++	if (trie == NULL)
++		return -1;
++
++	trie->id = start_id;
++
++	next_id = start_id + 1;
++	for (i = 0; i < trie->children_num; i++) {
++		child_id = trie_index_update(trie->children[i], next_id);
++		next_id = MAX(next_id, child_id);
++	}
++
++	return next_id;
++}
++
++/**
++ * trie_offset_update - sets offset for all nodes from trie according to trie
++ *                      serialization protocol
++ * @trie:     Trie
++ * @start_id: Start id.
++ */
++static unsigned long trie_offset_update(struct trie_node *trie,
++					int start_offset){
++	int i;
++	int next_offset = start_offset;
++	int child_offset;
++
++	if (trie == NULL)
++		return -1;
++
++	trie->offset = start_offset;
++	next_offset += SIZE_SIZEOF +
++		(trie->data != NULL ? (strlen(trie->data) + 1) : 1) +
++		PARENT_SIZEOF + CHILDREN_SIZEOF + (CHILDREN_SIZEOF *
++						   trie->children_num);
++
++	for (i = 0; i < trie->children_num; i++) {
++		child_offset = trie_offset_update(trie->children[i],
++						  next_offset);
++		next_offset = MAX(next_offset, child_offset);
++	}
++
++	return next_offset;
++}
++
++
++static int compare_symbols_name(const void *a, const void *b)
++{
++	const struct sym_entry *sa;
++	const struct sym_entry *sb;
++
++	sa = a;
++	sb = b;
++
++	return strcmp((char *)sa->sym, (char *)sb->sym);
++}
++
++
++/**
++ * resolve_unknown_sources - Assign a file to symbols with "unknown" filename
++ *
++ * Sets a source file for symbols defined multiple times, in some cases whose
++ * source file is "unknown", but is at least one symbol with known file.
++ */
++static void resolve_unknown_sources(void)
++{
++	int i, j;
++	struct trie_node *node;
++
++	qsort(table, table_cnt, sizeof(struct sym_entry), compare_symbols_name);
++
++	for (i = 0; i < table_cnt; i++) {
++		if (strcmp(table[i].node->data, UNKNOWN_FILE) == 0) {
++			node = NULL;
++
++			for (j = i - 1; j >= 0; j--) {
++				if (strcmp((char *)table[j].sym,
++					  (char *)table[i].sym)) {
++					break;
++				}
++				if (strcmp(table[j].node->data, UNKNOWN_FILE)) {
++					node = table[j].node;
++					break;
++				}
++			}
++			if (node == NULL) {
++				for (j = i + 1; j < table_cnt; j++) {
++					if (strcmp((char *)table[j].sym,
++						  (char *)table[i].sym)) {
++						break;
++					}
++					if (strcmp(table[j].node->data,
++						  UNKNOWN_FILE)) {
++						node = table[j].node;
++						break;
++					}
++				}
++			}
++
++			if (node != NULL)
++				table[i].node = node;
++		}
++	}
++}
++
+ /*
+  * This ignores the intensely annoying "mapping symbols" found
+  * in ARM ELF files: $a, $t and $d.
+@@ -102,14 +434,23 @@ static int read_symbol_tr(const char *sym, unsigned long long addr)
+ static int read_symbol(FILE *in, struct sym_entry *s)
+ {
+ 	char str[500];
++	char filename[500] = {};
+ 	char *sym, stype;
++	char c;
+ 	int rc;
++	char *dots;
+ 
+-	rc = fscanf(in, "%llx %c %499s\n", &s->addr, &stype, str);
+-	if (rc != 3) {
++	rc = fscanf(in, "%llx %c %499[^\n\t]%c", &s->addr, &stype, str, &c);
++	if (rc != 4) {
+ 		if (rc != EOF && fgets(str, 500, in) == NULL)
+ 			fprintf(stderr, "Read error or end of file.\n");
+ 		return -1;
++	} else {
++		if (c == '\t')
++			rc = fscanf(in, "%c%499[^\n]", &c, filename);
++
++		if (strlen(filename) == 0)
++			memcpy(filename, UNKNOWN_FILE, UNKNOWN_FILE_LEN);
+ 	}
+ 
+ 	sym = str;
+@@ -154,6 +495,16 @@ static int read_symbol(FILE *in, struct sym_entry *s)
+ 	strcpy((char *)s->sym + 1, str);
+ 	s->sym[0] = stype;
+ 
++	dots = strrchr(filename, ':');
++	if (dots)
++		*dots = '\0';
++
++	s->node = trie_add_path(trie, filename);
++	if (s->node == NULL) {
++		perror("Unable to add path to the trie");
++		exit(1);
++	}
++
+ 	return 0;
+ }
+ 
+@@ -245,12 +596,16 @@ static void read_map(FILE *in)
+ 	}
+ }
+ 
+-static void output_label(char *label)
++static void output_label(char *label, char read_only)
+ {
+ 	if (symbol_prefix_char)
+ 		printf(".globl %c%s\n", symbol_prefix_char, label);
+ 	else
+ 		printf(".globl %s\n", label);
++
++	if (!read_only)
++		printf("\t.data\n");
++
+ 	printf("\tALGN\n");
+ 	if (symbol_prefix_char)
+ 		printf("%c%s:\n", symbol_prefix_char, label);
+@@ -285,6 +640,9 @@ static int expand_symbol(unsigned char *data, int len, char *result)
+ 	return total;
+ }
+ 
++#define READ_ONLY   1
++#define READ_WRITE  0
++
+ static void write_src(void)
+ {
+ 	unsigned int i, k, off;
+@@ -301,6 +659,9 @@ static void write_src(void)
+ 	printf("#define ALGN .align 4\n");
+ 	printf("#endif\n");
+ 
++	output_label("kallsyms_trie", READ_WRITE);
++	dump_trie(trie);
++
+ 	printf("\t.section .rodata, \"a\"\n");
+ 
+ 	/* Provide proper symbols relocatability by their '_text'
+@@ -310,7 +671,7 @@ static void write_src(void)
+ 	 * .o files.  This prevents .tmp_kallsyms.o or any other
+ 	 * object from referencing them.
+ 	 */
+-	output_label("kallsyms_addresses");
++	output_label("kallsyms_addresses", READ_ONLY);
+ 	for (i = 0; i < table_cnt; i++) {
+ 		if (toupper(table[i].sym[0]) != 'A') {
+ 			if (_text <= table[i].addr)
+@@ -325,7 +686,7 @@ static void write_src(void)
+ 	}
+ 	printf("\n");
+ 
+-	output_label("kallsyms_num_syms");
++	output_label("kallsyms_num_syms", READ_ONLY);
+ 	printf("\tPTR\t%d\n", table_cnt);
+ 	printf("\n");
+ 
+@@ -338,7 +699,7 @@ static void write_src(void)
+ 		exit(EXIT_FAILURE);
+ 	}
+ 
+-	output_label("kallsyms_names");
++	output_label("kallsyms_names", READ_ONLY);
+ 	off = 0;
+ 	for (i = 0; i < table_cnt; i++) {
+ 		if ((i & 0xFF) == 0)
+@@ -353,14 +714,18 @@ static void write_src(void)
+ 	}
+ 	printf("\n");
+ 
+-	output_label("kallsyms_markers");
++	output_label("kallsyms_offsets", READ_ONLY);
++	for (i = 0; i < table_cnt; i++)
++		printf("\tPTR\t%#lx\n", table[i].node->offset);
++
++	output_label("kallsyms_markers", READ_ONLY);
+ 	for (i = 0; i < ((table_cnt + 255) >> 8); i++)
+ 		printf("\tPTR\t%d\n", markers[i]);
+ 	printf("\n");
+ 
+ 	free(markers);
+ 
+-	output_label("kallsyms_token_table");
++	output_label("kallsyms_token_table", READ_ONLY);
+ 	off = 0;
+ 	for (i = 0; i < 256; i++) {
+ 		best_idx[i] = off;
+@@ -370,7 +735,7 @@ static void write_src(void)
+ 	}
+ 	printf("\n");
+ 
+-	output_label("kallsyms_token_index");
++	output_label("kallsyms_token_index", READ_ONLY);
+ 	for (i = 0; i < 256; i++)
+ 		printf("\t.short\t%d\n", best_idx[i]);
+ 	printf("\n");
+@@ -652,10 +1017,21 @@ int main(int argc, char **argv)
+ 	} else if (argc != 1)
+ 		usage();
+ 
++	if (!trie)
++		trie_init(&trie);
++
+ 	read_map(stdin);
++
++	trie_index_update(trie, 0);
++	trie_offset_update(trie, 0);
++	resolve_unknown_sources();
++
+ 	sort_symbols();
++
+ 	optimize_token_table();
+ 	write_src();
+ 
++	trie_destroy(&trie);
++
+ 	return 0;
+ }
+-- 
+1.7.1
+

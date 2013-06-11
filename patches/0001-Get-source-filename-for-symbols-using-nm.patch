@@ -1,0 +1,26 @@
+From 5d50369dbcee44db9fd54218cbdfc930a5d29f0a Mon Sep 17 00:00:00 2001
+From: Ghennadi Procopciuc <unix140@gmail.com>
+Date: Tue, 11 Jun 2013 11:22:54 +0300
+Subject: [PATCH] Get source filename for the kernel symbols using nm.
+
+For each symbol, use debugging information to try to find a filename.
+---
+ scripts/link-vmlinux.sh |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/scripts/link-vmlinux.sh b/scripts/link-vmlinux.sh
+index 0149949..388ae18 100644
+--- a/scripts/link-vmlinux.sh
++++ b/scripts/link-vmlinux.sh
+@@ -85,7 +85,7 @@ kallsyms()
+ 	local aflags="${KBUILD_AFLAGS} ${KBUILD_AFLAGS_KERNEL}               \
+ 		      ${NOSTDINC_FLAGS} ${LINUXINCLUDE} ${KBUILD_CPPFLAGS}"
+ 
+-	${NM} -n ${1} | \
++	${NM} -ln ${1} | \
+ 		scripts/kallsyms ${kallsymopt} | \
+ 		${CC} ${aflags} -c -o ${2} -x assembler-with-cpp -
+ }
+-- 
+1.7.1
+
