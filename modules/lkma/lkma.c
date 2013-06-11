@@ -8,9 +8,9 @@
 #include <linux/uaccess.h>
 #include <linux/rculist.h>
 
-#include <linux/fs.h>		// for basic filesystem
-#include <linux/proc_fs.h>	// for the proc filesystem
-#include <linux/seq_file.h>	// for sequence files
+#include <linux/fs.h>		/* for basic filesystem */
+#include <linux/proc_fs.h>	/* for the proc filesystem */
+#include <linux/seq_file.h>	/* for sequence files */
 
 MODULE_DESCRIPTION("Linux Kernel Memory Analyzer");
 MODULE_AUTHOR("Ghennadi Procopciuc");
@@ -47,7 +47,7 @@ typedef struct stack buffer_t;
 static struct proc_dir_entry *lkma_entry;
 
 /* Buffer for output dump */
-static char *buffer = NULL;
+static char *buffer;
 
 /* Buffer size */
 static int buffer_size;
@@ -71,7 +71,7 @@ extern const unsigned long kallsyms_offsets[];
 extern const unsigned long kallsyms_num_syms;
 
 /* db stores all files defined in kallsyms_trie sorted with db_cmp */
-buffer_t db = {.size = 0,.capacity = 0,.data = NULL };
+buffer_t db = { .size = 0, .capacity = 0, .data = NULL };
 
 /**
  * realloc - reallocate memory allocated with kmalloc and friends
@@ -267,7 +267,6 @@ static void update_kallsyms_trie_size(void)
 }
 
 /**
- * //TODO: Check me
  * db_cmp - Database comparator.
  * @a: A node from db
  * @b: A node from db
@@ -669,7 +668,6 @@ static int dump_read(char *page, char **start, off_t off,
 {
 	int len = min(count, (int)(buffer_size - off));
 
-	// TODO : Lock needed here
 	if (buffer == NULL && off == 0) {
 		buffer = kmalloc(DEFAULT_DB_SIZE, GFP_KERNEL);
 		buffer_capacity = DEFAULT_DB_SIZE;
@@ -741,19 +739,6 @@ static int lkma_init(void)
 
 	filter = NULL;
 
-#if 0
-	lkma_entry = create_proc_entry(PROC_FILENAME, 0644, NULL);
-	if (lkma_entry == NULL) {
-		klog("Couldn't create proc entry");
-		return -ENOMEM;
-	} else {
-		lkma_entry->read_proc = dump_read;
-		lkma_entry->write_proc = set_filter;
-		klog("Module loaded");
-	}
-#endif
-
-	//TODO May be 0644 to mode argument
 	lkma_entry = proc_create(PROC_FILENAME, 0, NULL, &lkma_fops);
 
 	if (lkma_entry == NULL) {
