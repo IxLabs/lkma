@@ -1,0 +1,272 @@
+From af77a1670869c7684ef0a3b6c13fe1d21a14a02a Mon Sep 17 00:00:00 2001
+From: Ghennadi Procopciuc <unix140@gmail.com>
+Date: Tue, 18 Jun 2013 20:09:27 +0300
+Subject: [PATCH 6/8] Add additional functionality to kmemleak.
+
+Now kmemleak together with kallsyms can trace every dynamic memory allocation
+from kernel. Every time when kmemleak_alloc is called it will know which
+function is responsable for this allocation, using new, fancy argument :
+@function. This argument will be getting always using get_previous_function.
+---
+ include/linux/kmemleak.h |   16 +++++++------
+ mm/kmemleak.c            |   54 ++++++++++++++++++++++++++++++---------------
+ 2 files changed, 45 insertions(+), 25 deletions(-)
+
+diff --git a/include/linux/kmemleak.h b/include/linux/kmemleak.h
+index 2a5e554..1dc3d37 100644
+--- a/include/linux/kmemleak.h
++++ b/include/linux/kmemleak.h
+@@ -25,8 +25,9 @@
+ 
+ extern void kmemleak_init(void) __ref;
+ extern void kmemleak_alloc(const void *ptr, size_t size, int min_count,
+-			   gfp_t gfp) __ref;
+-extern void kmemleak_alloc_percpu(const void __percpu *ptr, size_t size) __ref;
++			   gfp_t gfp, unsigned long function) __ref;
++extern void kmemleak_alloc_percpu(const void __percpu *ptr, size_t size,
++		unsigned long function) __ref;
+ extern void kmemleak_free(const void *ptr) __ref;
+ extern void kmemleak_free_part(const void *ptr, size_t size) __ref;
+ extern void kmemleak_free_percpu(const void __percpu *ptr) __ref;
+@@ -39,10 +40,10 @@ extern void kmemleak_no_scan(const void *ptr) __ref;
+ 
+ static inline void kmemleak_alloc_recursive(const void *ptr, size_t size,
+ 					    int min_count, unsigned long flags,
+-					    gfp_t gfp)
++					    gfp_t gfp, unsigned long function)
+ {
+ 	if (!(flags & SLAB_NOLEAKTRACE))
+-		kmemleak_alloc(ptr, size, min_count, gfp);
++		kmemleak_alloc(ptr, size, min_count, gfp, function);
+ }
+ 
+ static inline void kmemleak_free_recursive(const void *ptr, unsigned long flags)
+@@ -62,15 +63,16 @@ static inline void kmemleak_init(void)
+ {
+ }
+ static inline void kmemleak_alloc(const void *ptr, size_t size, int min_count,
+-				  gfp_t gfp)
++				  gfp_t gfp, unsigned long function)
+ {
+ }
+ static inline void kmemleak_alloc_recursive(const void *ptr, size_t size,
+ 					    int min_count, unsigned long flags,
+-					    gfp_t gfp)
++					    gfp_t gfp, unsigned long function)
+ {
+ }
+-static inline void kmemleak_alloc_percpu(const void __percpu *ptr, size_t size)
++static inline void kmemleak_alloc_percpu(const void __percpu *ptr, size_t size,
++		unsigned long function)
+ {
+ }
+ static inline void kmemleak_free(const void *ptr)
+diff --git a/mm/kmemleak.c b/mm/kmemleak.c
+index c8d7f31..6ae252b 100644
+--- a/mm/kmemleak.c
++++ b/mm/kmemleak.c
+@@ -102,6 +102,8 @@
+ #include <linux/kmemleak.h>
+ #include <linux/memory_hotplug.h>
+ 
++#include <linux/kallsyms.h>
++
+ /*
+  * Kmemleak configuration and common defines.
+  */
+@@ -139,6 +141,7 @@ struct kmemleak_scan_area {
+ struct kmemleak_object {
+ 	spinlock_t lock;
+ 	unsigned long flags;		/* object status flags */
++	unsigned long function;
+ 	struct list_head object_list;
+ 	struct list_head gray_list;
+ 	struct rb_node rb_node;
+@@ -252,6 +255,7 @@ struct early_log {
+ 	int min_count;			/* minimum reference count */
+ 	unsigned long trace[MAX_TRACE];	/* stack trace */
+ 	unsigned int trace_len;		/* stack trace length */
++	unsigned long function;
+ };
+ 
+ /* early logging buffer and current position */
+@@ -513,7 +517,8 @@ static int __save_stack_trace(unsigned long *trace)
+  * memory block and add it to the object_list and object_tree_root.
+  */
+ static struct kmemleak_object *create_object(unsigned long ptr, size_t size,
+-					     int min_count, gfp_t gfp)
++					     int min_count, gfp_t gfp,
++					     unsigned long function)
+ {
+ 	unsigned long flags;
+ 	struct kmemleak_object *object, *parent;
+@@ -538,6 +543,13 @@ static struct kmemleak_object *create_object(unsigned long ptr, size_t size,
+ 	object->count = 0;			/* white color initially */
+ 	object->jiffies = jiffies;
+ 	object->checksum = 0;
++	object->function = function;
++
++	if (function)
++		kallsyms_add_memory(function, size);
++	else
++		printk(KERN_ALERT "[%s] WARNING ! undefined function !\n",
++		       __func__);
+ 
+ 	/* task information */
+ 	if (in_irq()) {
+@@ -602,6 +614,9 @@ static void __delete_object(struct kmemleak_object *object)
+ {
+ 	unsigned long flags;
+ 
++	if (object->function)
++		kallsyms_add_memory(object->function, -object->size);
++
+ 	write_lock_irqsave(&kmemleak_lock, flags);
+ 	rb_erase(&object->rb_node, &object_tree_root);
+ 	list_del_rcu(&object->object_list);
+@@ -671,10 +686,10 @@ static void delete_object_part(unsigned long ptr, size_t size)
+ 	end = object->pointer + object->size;
+ 	if (ptr > start)
+ 		create_object(start, ptr - start, object->min_count,
+-			      GFP_KERNEL);
++			      GFP_KERNEL, object->function);
+ 	if (ptr + size < end)
+ 		create_object(ptr + size, end - ptr - size, object->min_count,
+-			      GFP_KERNEL);
++			      GFP_KERNEL, object->function);
+ 
+ 	put_object(object);
+ }
+@@ -798,7 +813,7 @@ static void object_no_scan(unsigned long ptr)
+  * processed later once kmemleak is fully initialized.
+  */
+ static void __init log_early(int op_type, const void *ptr, size_t size,
+-			     int min_count)
++			     int min_count, unsigned long function)
+ {
+ 	unsigned long flags;
+ 	struct early_log *log;
+@@ -823,6 +838,7 @@ static void __init log_early(int op_type, const void *ptr, size_t size,
+ 	log->op_type = op_type;
+ 	log->ptr = ptr;
+ 	log->size = size;
++	log->function = function;
+ 	log->min_count = min_count;
+ 	log->trace_len = __save_stack_trace(log->trace);
+ 	crt_early_log++;
+@@ -846,7 +862,7 @@ static void early_alloc(struct early_log *log)
+ 	 */
+ 	rcu_read_lock();
+ 	object = create_object((unsigned long)log->ptr, log->size,
+-			       log->min_count, GFP_ATOMIC);
++			       log->min_count, GFP_ATOMIC, log->function);
+ 	if (!object)
+ 		goto out;
+ 	spin_lock_irqsave(&object->lock, flags);
+@@ -887,14 +903,15 @@ static void early_alloc_percpu(struct early_log *log)
+  * (memory block) is allocated (kmem_cache_alloc, kmalloc, vmalloc etc.).
+  */
+ void __ref kmemleak_alloc(const void *ptr, size_t size, int min_count,
+-			  gfp_t gfp)
++			  gfp_t gfp, unsigned long function)
+ {
+ 	pr_debug("%s(0x%p, %zu, %d)\n", __func__, ptr, size, min_count);
+ 
+ 	if (atomic_read(&kmemleak_enabled) && ptr && !IS_ERR(ptr))
+-		create_object((unsigned long)ptr, size, min_count, gfp);
++		create_object((unsigned long)ptr, size,
++				min_count, gfp, function);
+ 	else if (atomic_read(&kmemleak_early_log))
+-		log_early(KMEMLEAK_ALLOC, ptr, size, min_count);
++		log_early(KMEMLEAK_ALLOC, ptr, size, min_count, function);
+ }
+ EXPORT_SYMBOL_GPL(kmemleak_alloc);
+ 
+@@ -907,7 +924,8 @@ EXPORT_SYMBOL_GPL(kmemleak_alloc);
+  * (memory block) is allocated (alloc_percpu). It assumes GFP_KERNEL
+  * allocation.
+  */
+-void __ref kmemleak_alloc_percpu(const void __percpu *ptr, size_t size)
++void __ref kmemleak_alloc_percpu(const void __percpu *ptr, size_t size,
++		unsigned long function)
+ {
+ 	unsigned int cpu;
+ 
+@@ -920,9 +938,9 @@ void __ref kmemleak_alloc_percpu(const void __percpu *ptr, size_t size)
+ 	if (atomic_read(&kmemleak_enabled) && ptr && !IS_ERR(ptr))
+ 		for_each_possible_cpu(cpu)
+ 			create_object((unsigned long)per_cpu_ptr(ptr, cpu),
+-				      size, 0, GFP_KERNEL);
++				      size, 0, GFP_KERNEL, function);
+ 	else if (atomic_read(&kmemleak_early_log))
+-		log_early(KMEMLEAK_ALLOC_PERCPU, ptr, size, 0);
++		log_early(KMEMLEAK_ALLOC_PERCPU, ptr, size, 0, function);
+ }
+ EXPORT_SYMBOL_GPL(kmemleak_alloc_percpu);
+ 
+@@ -940,7 +958,7 @@ void __ref kmemleak_free(const void *ptr)
+ 	if (atomic_read(&kmemleak_enabled) && ptr && !IS_ERR(ptr))
+ 		delete_object_full((unsigned long)ptr);
+ 	else if (atomic_read(&kmemleak_early_log))
+-		log_early(KMEMLEAK_FREE, ptr, 0, 0);
++		log_early(KMEMLEAK_FREE, ptr, 0, 0, 0);
+ }
+ EXPORT_SYMBOL_GPL(kmemleak_free);
+ 
+@@ -960,7 +978,7 @@ void __ref kmemleak_free_part(const void *ptr, size_t size)
+ 	if (atomic_read(&kmemleak_enabled) && ptr && !IS_ERR(ptr))
+ 		delete_object_part((unsigned long)ptr, size);
+ 	else if (atomic_read(&kmemleak_early_log))
+-		log_early(KMEMLEAK_FREE_PART, ptr, size, 0);
++		log_early(KMEMLEAK_FREE_PART, ptr, size, 0, 0);
+ }
+ EXPORT_SYMBOL_GPL(kmemleak_free_part);
+ 
+@@ -982,7 +1000,7 @@ void __ref kmemleak_free_percpu(const void __percpu *ptr)
+ 			delete_object_full((unsigned long)per_cpu_ptr(ptr,
+ 								      cpu));
+ 	else if (atomic_read(&kmemleak_early_log))
+-		log_early(KMEMLEAK_FREE_PERCPU, ptr, 0, 0);
++		log_early(KMEMLEAK_FREE_PERCPU, ptr, 0, 0, 0);
+ }
+ EXPORT_SYMBOL_GPL(kmemleak_free_percpu);
+ 
+@@ -1000,7 +1018,7 @@ void __ref kmemleak_not_leak(const void *ptr)
+ 	if (atomic_read(&kmemleak_enabled) && ptr && !IS_ERR(ptr))
+ 		make_gray_object((unsigned long)ptr);
+ 	else if (atomic_read(&kmemleak_early_log))
+-		log_early(KMEMLEAK_NOT_LEAK, ptr, 0, 0);
++		log_early(KMEMLEAK_NOT_LEAK, ptr, 0, 0, 0);
+ }
+ EXPORT_SYMBOL(kmemleak_not_leak);
+ 
+@@ -1020,7 +1038,7 @@ void __ref kmemleak_ignore(const void *ptr)
+ 	if (atomic_read(&kmemleak_enabled) && ptr && !IS_ERR(ptr))
+ 		make_black_object((unsigned long)ptr);
+ 	else if (atomic_read(&kmemleak_early_log))
+-		log_early(KMEMLEAK_IGNORE, ptr, 0, 0);
++		log_early(KMEMLEAK_IGNORE, ptr, 0, 0, 0);
+ }
+ EXPORT_SYMBOL(kmemleak_ignore);
+ 
+@@ -1042,7 +1060,7 @@ void __ref kmemleak_scan_area(const void *ptr, size_t size, gfp_t gfp)
+ 	if (atomic_read(&kmemleak_enabled) && ptr && size && !IS_ERR(ptr))
+ 		add_scan_area((unsigned long)ptr, size, gfp);
+ 	else if (atomic_read(&kmemleak_early_log))
+-		log_early(KMEMLEAK_SCAN_AREA, ptr, size, 0);
++		log_early(KMEMLEAK_SCAN_AREA, ptr, size, 0, 0);
+ }
+ EXPORT_SYMBOL(kmemleak_scan_area);
+ 
+@@ -1062,7 +1080,7 @@ void __ref kmemleak_no_scan(const void *ptr)
+ 	if (atomic_read(&kmemleak_enabled) && ptr && !IS_ERR(ptr))
+ 		object_no_scan((unsigned long)ptr);
+ 	else if (atomic_read(&kmemleak_early_log))
+-		log_early(KMEMLEAK_NO_SCAN, ptr, 0, 0);
++		log_early(KMEMLEAK_NO_SCAN, ptr, 0, 0, 0);
+ }
+ EXPORT_SYMBOL(kmemleak_no_scan);
+ 
+-- 
+1.7.1
+

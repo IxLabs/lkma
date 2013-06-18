@@ -1,0 +1,155 @@
+From d71ad12507f910a911f5d120ac09339b1d2a0676 Mon Sep 17 00:00:00 2001
+From: Ghennadi Procopciuc <unix140@gmail.com>
+Date: Tue, 18 Jun 2013 20:02:45 +0300
+Subject: [PATCH 4/8] Count dynamic memory allocation for kernel modules
+
+Using module_add_memory you can get stats about all memory allocated by
+an kernel module. Each time the @size field from struct module will be
+increased with the given value.
+---
+ include/linux/module.h |   11 +++++++++--
+ kernel/module.c        |   43 +++++++++++++++++++++++++++++++++++++++----
+ 2 files changed, 48 insertions(+), 6 deletions(-)
+
+diff --git a/include/linux/module.h b/include/linux/module.h
+index 46f1ea0..3df7d2b 100644
+--- a/include/linux/module.h
++++ b/include/linux/module.h
+@@ -120,7 +120,7 @@ extern const struct gtype##_id __mod_##gtype##_table		\
+  * is a GPL combined work.
+  *
+  * This exists for several reasons
+- * 1.	So modinfo can show license info for users wanting to vet their setup 
++ * 1.	So modinfo can show license info for users wanting to vet their setup
+  *	is free
+  * 2.	So the community can ignore bug reports including proprietary modules
+  * 3.	So vendors can do likewise based on their own policies
+@@ -132,7 +132,7 @@ extern const struct gtype##_id __mod_##gtype##_table		\
+  * authors use multiple MODULE_AUTHOR() statements/lines.
+  */
+ #define MODULE_AUTHOR(_author) MODULE_INFO(author, _author)
+-  
++
+ /* What your module does. */
+ #define MODULE_DESCRIPTION(_description) MODULE_INFO(description, _description)
+ 
+@@ -375,6 +375,8 @@ struct module
+ 	ctor_fn_t *ctors;
+ 	unsigned int num_ctors;
+ #endif
++
++	long allocated_size;
+ };
+ #ifndef MODULE_ARCH_INIT
+ #define MODULE_ARCH_INIT {}
+@@ -499,6 +501,7 @@ const char *module_address_lookup(unsigned long addr,
+ 			    char **modname,
+ 			    char *namebuf);
+ int lookup_module_symbol_name(unsigned long addr, char *symname);
++void module_add_memory(unsigned long addr, int size);
+ int lookup_module_symbol_attrs(unsigned long addr, unsigned long *size, unsigned long *offset, char *modname, char *name);
+ 
+ /* For extable.c to search modules' exception tables. */
+@@ -578,6 +581,10 @@ static inline int lookup_module_symbol_name(unsigned long addr, char *symname)
+ 	return -ERANGE;
+ }
+ 
++static void module_add_memory(unsigned long addr, int size)
++{
++}
++
+ static inline int lookup_module_symbol_attrs(unsigned long addr, unsigned long *size, unsigned long *offset, char *modname, char *name)
+ {
+ 	return -ERANGE;
+diff --git a/kernel/module.c b/kernel/module.c
+index cab4bce..85b6e33 100644
+--- a/kernel/module.c
++++ b/kernel/module.c
+@@ -103,6 +103,7 @@
+ DEFINE_MUTEX(module_mutex);
+ EXPORT_SYMBOL_GPL(module_mutex);
+ static LIST_HEAD(modules);
++EXPORT_SYMBOL(modules);
+ #ifdef CONFIG_KGDB_KDB
+ struct list_head *kdb_modules = &modules; /* kdb needs the list of modules */
+ #endif /* CONFIG_KGDB_KDB */
+@@ -1161,7 +1162,7 @@ static unsigned long maybe_relocated(unsigned long crc,
+ static int check_version(Elf_Shdr *sechdrs,
+ 			 unsigned int versindex,
+ 			 const char *symname,
+-			 struct module *mod, 
++			 struct module *mod,
+ 			 const unsigned long *crc,
+ 			 const struct module *crc_owner)
+ {
+@@ -1231,7 +1232,7 @@ static inline int same_magic(const char *amagic, const char *bmagic,
+ static inline int check_version(Elf_Shdr *sechdrs,
+ 				unsigned int versindex,
+ 				const char *symname,
+-				struct module *mod, 
++				struct module *mod,
+ 				const unsigned long *crc,
+ 				const struct module *crc_owner)
+ {
+@@ -3038,6 +3039,7 @@ static int do_init_module(struct module *mod)
+ {
+ 	int ret = 0;
+ 
++	mod->allocated_size = 0;
+ 	/*
+ 	 * We want to find out whether @mod uses async during init.  Clear
+ 	 * PF_USED_ASYNC.  async_schedule*() will set it.
+@@ -3358,8 +3360,6 @@ SYSCALL_DEFINE3(finit_module, int, fd, const char __user *, uargs, int, flags)
+ 	if (err)
+ 		return err;
+ 
+-	pr_debug("finit_module: fd=%d, uargs=%p, flags=%i\n", fd, uargs, flags);
+-
+ 	if (flags & ~(MODULE_INIT_IGNORE_MODVERSIONS
+ 		      |MODULE_INIT_IGNORE_VERMAGIC))
+ 		return -EINVAL;
+@@ -3463,6 +3463,41 @@ const char *module_address_lookup(unsigned long addr,
+ 	return ret;
+ }
+ 
++/**
++ * module_add_memory - counts dynamically allocated memory for a module
++ * @addr: Function address, the caller
++ * @size: Allocation size
++ */
++void module_add_memory(unsigned long addr, int size)
++{
++	struct module *mod;
++	bool found = false;
++
++	preempt_disable();
++	list_for_each_entry_rcu(mod, &modules, list) {
++		if (mod->state == MODULE_STATE_UNFORMED)
++			continue;
++
++		if (within_module_init(addr, mod) ||
++		    within_module_core(addr, mod)) {
++
++			mod->allocated_size += size;
++			found = true;
++
++			if (mod->allocated_size < 0)
++				printk(KERN_ALERT "[%s] WARNING ! Module %s, "
++				       "mod->allocated_size = %ld\n", __func__,
++				       mod->name, mod->allocated_size);
++			break;
++		}
++	}
++	preempt_enable();
++
++	if (!found)
++		printk(KERN_ALERT "[%s] WARNING ! Module not found for"
++		       " address %p\n", __func__, (char *)addr);
++}
++
+ int lookup_module_symbol_name(unsigned long addr, char *symname)
+ {
+ 	struct module *mod;
+-- 
+1.7.1
+

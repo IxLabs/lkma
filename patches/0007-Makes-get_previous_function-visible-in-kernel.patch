@@ -1,0 +1,40 @@
+From cffbdf1e613a909dc65996fe4550ef2a6a9960cd Mon Sep 17 00:00:00 2001
+From: Ghennadi Procopciuc <unix140@gmail.com>
+Date: Tue, 18 Jun 2013 20:11:19 +0300
+Subject: [PATCH 7/8] Makes get_previous_function visible in kernel.
+
+---
+ include/linux/printk.h |    2 ++
+ include/linux/sched.h  |    3 +++
+ 2 files changed, 5 insertions(+), 0 deletions(-)
+
+diff --git a/include/linux/printk.h b/include/linux/printk.h
+index 6af944a..925f88c 100644
+--- a/include/linux/printk.h
++++ b/include/linux/printk.h
+@@ -200,6 +200,8 @@ static inline void show_regs_print_info(const char *log_lvl)
+ #endif
+ 
+ extern void dump_stack(void) __cold;
++extern unsigned long get_previous_function(unsigned int func_number, bool reliable,
++		unsigned long exclude) __cold;
+ 
+ #ifndef pr_fmt
+ #define pr_fmt(fmt) fmt
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 178a8d9..51e6d37 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -259,6 +259,9 @@ extern void show_regs(struct pt_regs *);
+  */
+ extern void show_stack(struct task_struct *task, unsigned long *sp);
+ 
++extern unsigned long previous_function(unsigned int func_number, bool reliable,
++		unsigned long exclude);
++
+ void io_schedule(void);
+ long io_schedule_timeout(long timeout);
+ 
+-- 
+1.7.1
+

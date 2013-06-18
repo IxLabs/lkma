@@ -1,0 +1,130 @@
+From 12b5928529e53f28515c5f905b2afa7cf1275b9b Mon Sep 17 00:00:00 2001
+From: Ghennadi Procopciuc <unix140@gmail.com>
+Date: Tue, 18 Jun 2013 20:07:27 +0300
+Subject: [PATCH 5/8] Add get_previous_function
+
+Walking on the stack this function returns address of the previous function,
+the caller. The mechanism was borrow from dump_stack.
+---
+ arch/x86/kernel/dumpstack.c |   76 +++++++++++++++++++++++++++++++++++++++++++
+ lib/dump_stack.c            |   20 +++++++++++
+ 2 files changed, 96 insertions(+), 0 deletions(-)
+
+diff --git a/arch/x86/kernel/dumpstack.c b/arch/x86/kernel/dumpstack.c
+index deb6421..219b351 100644
+--- a/arch/x86/kernel/dumpstack.c
++++ b/arch/x86/kernel/dumpstack.c
+@@ -113,6 +113,82 @@ print_context_stack(struct thread_info *tinfo,
+ }
+ EXPORT_SYMBOL_GPL(print_context_stack);
+ 
++#ifdef CONFIG_FRAME_POINTER
++/**
++ * previous_function - returns address of the previous function, the caller.
++ * @func_number:  number of function from stack.
++ * @reliable:     skip or not addresses which are not reliables
++ * @exclude:      all functin that are in the same file with exclude will be
++ *                skiped
++ *
++ * Always will exclude functions from the mm subtree.
++ * Architectures can override this implementation by implementing its own.
++ *
++ * Return: Caller address.
++ */
++unsigned long previous_function(unsigned int func_number, bool reliable,
++				unsigned long exclude){
++	unsigned long dummy;
++	unsigned long *stack;
++	unsigned long bp;
++	struct stack_frame *frame;
++	struct thread_info *tinfo;
++	char counter = 0;
++
++	/* Skip get_previous_function call */
++	func_number++;
++
++	stack = &dummy;
++	get_bp(bp);
++	frame = (struct stack_frame *)bp;
++
++	tinfo = (struct thread_info *)
++	    ((unsigned long)stack & (~(THREAD_SIZE - 1)));
++
++	while (valid_stack_ptr(tinfo, stack, sizeof(*stack), NULL)) {
++		unsigned long addr;
++
++		addr = *stack;
++		if (__kernel_text_address(addr)) {
++			if ((unsigned long) stack == bp + sizeof(long)) {
++				frame = frame->next_frame;
++				bp = (unsigned long) frame;
++
++				if (from_mm_tree(addr))
++					continue;
++
++				if (exclude != 0) {
++					if (!kallsyms_same_file(addr, exclude))
++						counter++;
++				} else {
++					counter++;
++				}
++			} else {
++				if (!reliable)
++					if (exclude != 0) {
++						if (!kallsyms_same_file(addr, exclude))
++							counter++;
++					} else {
++						counter++;
++					}
++			}
++			if (counter == func_number)
++				return addr;
++		}
++		stack++;
++	}
++
++	printk(KERN_ALERT "[%s] ERROR ! Return NULL pointer\n", __func__);
++	return 0;
++}
++#else
++unsigned long previous_function(unsigned int func_number, bool reliable,
++		unsigned long exclude){
++	name = NULL;
++	return -1;
++}
++#endif
++
+ unsigned long
+ print_context_stack_bp(struct thread_info *tinfo,
+ 		       unsigned long *stack, unsigned long bp,
+diff --git a/lib/dump_stack.c b/lib/dump_stack.c
+index 53bad09..fa52558 100644
+--- a/lib/dump_stack.c
++++ b/lib/dump_stack.c
+@@ -18,3 +18,23 @@ void dump_stack(void)
+ 	show_stack(NULL, NULL);
+ }
+ EXPORT_SYMBOL(dump_stack);
++
++/**
++ * get_previous_function - returns address of the previous function, the caller.
++ * @func_number:  number of function from stack.
++ * @reliable:     skip or not addresses which are not reliables
++ * @exclude:      all functin that are in the same file with exclude will be
++ *                skiped
++ *
++ * Always will exclude functions from the mm subtree.
++ * Architectures can override this implementation by implementing its own.
++ *
++ * Return: Caller address.
++ */
++unsigned long get_previous_function(unsigned int func_number, bool reliable,
++		unsigned long exclude)
++{
++	return previous_function(func_number, reliable, exclude);
++}
++EXPORT_SYMBOL(get_previous_function);
++
+-- 
+1.7.1
+

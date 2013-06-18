@@ -1,0 +1,277 @@
+From 18a23fe9249b11c5097c75dd780b55705a97c7f1 Mon Sep 17 00:00:00 2001
+From: Ghennadi Procopciuc <unix140@gmail.com>
+Date: Tue, 18 Jun 2013 20:12:44 +0300
+Subject: [PATCH 8/8] Update kmemleak tracepoints with @function argument.
+
+Add couple of lines in 10 source file that will add tracepoints for
+dynamic memory allocation tracing.
+---
+ include/linux/slub_def.h |    3 ++-
+ lib/scatterlist.c        |    5 ++++-
+ mm/bootmem.c             |    6 +++++-
+ mm/nobootmem.c           |    5 ++++-
+ mm/page_alloc.c          |    6 +++++-
+ mm/page_cgroup.c         |    5 ++++-
+ mm/percpu.c              |    5 ++++-
+ mm/slob.c                |    4 +++-
+ mm/slub.c                |   10 ++++++++--
+ mm/vmalloc.c             |   10 +++++++---
+ 10 files changed, 46 insertions(+), 13 deletions(-)
+
+diff --git a/include/linux/slub_def.h b/include/linux/slub_def.h
+index 027276f..6106dda 100644
+--- a/include/linux/slub_def.h
++++ b/include/linux/slub_def.h
+@@ -114,7 +114,8 @@ kmalloc_order(size_t size, gfp_t flags, unsigned int order)
+ 
+ 	flags |= (__GFP_COMP | __GFP_KMEMCG);
+ 	ret = (void *) __get_free_pages(flags, order);
+-	kmemleak_alloc(ret, size, 1, flags);
++	kmemleak_alloc(ret, size, 1, flags, get_previous_function(1, 1,
++				(unsigned long)__kmalloc));
+ 	return ret;
+ }
+ 
+diff --git a/lib/scatterlist.c b/lib/scatterlist.c
+index a1cf8ca..695ffde 100644
+--- a/lib/scatterlist.c
++++ b/lib/scatterlist.c
+@@ -146,7 +146,10 @@ static struct scatterlist *sg_kmalloc(unsigned int nents, gfp_t gfp_mask)
+ 		 * intermediate allocations.
+ 		 */
+ 		void *ptr = (void *) __get_free_page(gfp_mask);
+-		kmemleak_alloc(ptr, PAGE_SIZE, 1, gfp_mask);
++		unsigned long function;
++		function = get_previous_function(1, 1,
++						 (unsigned long)sg_kmalloc);
++		kmemleak_alloc(ptr, PAGE_SIZE, 1, gfp_mask, function);
+ 		return ptr;
+ 	} else
+ 		return kmalloc(nents * sizeof(struct scatterlist), gfp_mask);
+diff --git a/mm/bootmem.c b/mm/bootmem.c
+index 2b0bcb0..6bbf17c 100644
+--- a/mm/bootmem.c
++++ b/mm/bootmem.c
+@@ -547,6 +547,7 @@ static void * __init alloc_bootmem_bdata(struct bootmem_data *bdata,
+ 		int merge;
+ 		void *region;
+ 		unsigned long eidx, i, start_off, end_off;
++		unsigned long function;
+ find_block:
+ 		sidx = find_next_zero_bit(bdata->node_bootmem_map, midx, sidx);
+ 		sidx = align_idx(bdata, sidx, step);
+@@ -585,11 +586,14 @@ find_block:
+ 		region = phys_to_virt(PFN_PHYS(bdata->node_min_pfn) +
+ 				start_off);
+ 		memset(region, 0, size);
++
++		function = get_previous_function(1, 1,
++				(unsigned long) alloc_bootmem_bdata);
+ 		/*
+ 		 * The min_count is set to 0 so that bootmem allocated blocks
+ 		 * are never reported as leaks.
+ 		 */
+-		kmemleak_alloc(region, size, 0, 0);
++		kmemleak_alloc(region, size, 0, 0, function);
+ 		return region;
+ 	}
+ 
+diff --git a/mm/nobootmem.c b/mm/nobootmem.c
+index bdd3fa2..96cbe15 100644
+--- a/mm/nobootmem.c
++++ b/mm/nobootmem.c
+@@ -37,6 +37,7 @@ static void * __init __alloc_memory_core_early(int nid, u64 size, u64 align,
+ {
+ 	void *ptr;
+ 	u64 addr;
++	unsigned long function;
+ 
+ 	if (limit > memblock.current_limit)
+ 		limit = memblock.current_limit;
+@@ -52,7 +53,9 @@ static void * __init __alloc_memory_core_early(int nid, u64 size, u64 align,
+ 	 * The min_count is set to 0 so that bootmem allocated blocks
+ 	 * are never reported as leaks.
+ 	 */
+-	kmemleak_alloc(ptr, size, 0, 0);
++	function =  get_previous_function(1, 1,
++			(unsigned long) __alloc_memory_core_early);
++	kmemleak_alloc(ptr, size, 0, 0, function);
+ 	return ptr;
+ }
+ 
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 98cbdf6..70db27d 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -5592,6 +5592,7 @@ void *__init alloc_large_system_hash(const char *tablename,
+ 	unsigned long long max = high_limit;
+ 	unsigned long log2qty, size;
+ 	void *table = NULL;
++	unsigned long function;
+ 
+ 	/* allow the kernel cmdline to have a say */
+ 	if (!numentries) {
+@@ -5648,7 +5649,10 @@ void *__init alloc_large_system_hash(const char *tablename,
+ 			 */
+ 			if (get_order(size) < MAX_ORDER) {
+ 				table = alloc_pages_exact(size, GFP_ATOMIC);
+-				kmemleak_alloc(table, size, 1, GFP_ATOMIC);
++				function = get_previous_function(1, 1,
++						(unsigned long) alloc_large_system_hash);
++				kmemleak_alloc(table, size, 1, GFP_ATOMIC,
++					       function);
+ 			}
+ 		}
+ 	} while (!table && size > PAGE_SIZE && --log2qty);
+diff --git a/mm/page_cgroup.c b/mm/page_cgroup.c
+index 6d757e3..ea596d3 100644
+--- a/mm/page_cgroup.c
++++ b/mm/page_cgroup.c
+@@ -109,10 +109,13 @@ static void *__meminit alloc_page_cgroup(size_t size, int nid)
+ {
+ 	gfp_t flags = GFP_KERNEL | __GFP_ZERO | __GFP_NOWARN;
+ 	void *addr = NULL;
++	unsigned long function;
+ 
+ 	addr = alloc_pages_exact_nid(nid, size, flags);
+ 	if (addr) {
+-		kmemleak_alloc(addr, size, 1, flags);
++		function = get_previous_function(1, 1,
++				(unsigned long) alloc_page_cgroup);
++		kmemleak_alloc(addr, size, 1, flags, function);
+ 		return addr;
+ 	}
+ 
+diff --git a/mm/percpu.c b/mm/percpu.c
+index 8c8e08f..9224d49 100644
+--- a/mm/percpu.c
++++ b/mm/percpu.c
+@@ -712,6 +712,7 @@ static void __percpu *pcpu_alloc(size_t size, size_t align, bool reserved)
+ 	int slot, off, new_alloc;
+ 	unsigned long flags;
+ 	void __percpu *ptr;
++	unsigned long function;
+ 
+ 	if (unlikely(!size || size > PCPU_MIN_UNIT_SIZE || align > PAGE_SIZE)) {
+ 		WARN(true, "illegal size (%zu) or align (%zu) for "
+@@ -805,7 +806,9 @@ area_found:
+ 
+ 	/* return address relative to base address */
+ 	ptr = __addr_to_pcpu_ptr(chunk->base_addr + off);
+-	kmemleak_alloc_percpu(ptr, size);
++
++	function = get_previous_function(1, 1, (unsigned long)pcpu_alloc);
++	kmemleak_alloc_percpu(ptr, size, function);
+ 	return ptr;
+ 
+ fail_unlock:
+diff --git a/mm/slob.c b/mm/slob.c
+index eeed4a0..dd7cd10 100644
+--- a/mm/slob.c
++++ b/mm/slob.c
+@@ -429,6 +429,7 @@ __do_kmalloc_node(size_t size, gfp_t gfp, int node, unsigned long caller)
+ 	unsigned int *m;
+ 	int align = max_t(size_t, ARCH_KMALLOC_MINALIGN, ARCH_SLAB_MINALIGN);
+ 	void *ret;
++	unsigned long function;
+ 
+ 	gfp &= gfp_allowed_mask;
+ 
+@@ -458,7 +459,8 @@ __do_kmalloc_node(size_t size, gfp_t gfp, int node, unsigned long caller)
+ 				   size, PAGE_SIZE << order, gfp, node);
+ 	}
+ 
+-	kmemleak_alloc(ret, size, 1, gfp);
++	function = get_previous_function(1, 1, (unsigned long) set_slob);
++	kmemleak_alloc(ret, size, 1, gfp, function);
+ 	return ret;
+ }
+ 
+diff --git a/mm/slub.c b/mm/slub.c
+index 57707f0..e416ecb 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -930,9 +930,13 @@ static inline int slab_pre_alloc_hook(struct kmem_cache *s, gfp_t flags)
+ 
+ static inline void slab_post_alloc_hook(struct kmem_cache *s, gfp_t flags, void *object)
+ {
++	unsigned long function;
+ 	flags &= gfp_allowed_mask;
+ 	kmemcheck_slab_alloc(s, flags, object, slab_ksize(s));
+-	kmemleak_alloc_recursive(object, s->object_size, 1, s->flags, flags);
++
++	function = get_previous_function(1, 1, (unsigned long)trace);
++	kmemleak_alloc_recursive(object, s->object_size, 1, s->flags, flags,
++				 function);
+ }
+ 
+ static inline void slab_free_hook(struct kmem_cache *s, void *x)
+@@ -3244,13 +3248,15 @@ static void *kmalloc_large_node(size_t size, gfp_t flags, int node)
+ {
+ 	struct page *page;
+ 	void *ptr = NULL;
++	unsigned long function;
+ 
+ 	flags |= __GFP_COMP | __GFP_NOTRACK | __GFP_KMEMCG;
+ 	page = alloc_pages_node(node, flags, get_order(size));
+ 	if (page)
+ 		ptr = page_address(page);
+ 
+-	kmemleak_alloc(ptr, size, 1, flags);
++	function = get_previous_function(1, 1, kmalloc_large_node);
++	kmemleak_alloc(ptr, size, 1, flags, function);
+ 	return ptr;
+ }
+ 
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index d365724..3109140 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -666,6 +666,7 @@ static void purge_vmap_area_lazy(void)
+  */
+ static void free_vmap_area_noflush(struct vmap_area *va)
+ {
++	kmemleak_free_recursive(va, va->flags);
+ 	va->flags |= VM_LAZY_FREE;
+ 	atomic_add((va->va_end - va->va_start) >> PAGE_SHIFT, &vmap_lazy_nr);
+ 	if (unlikely(atomic_read(&vmap_lazy_nr) > lazy_max_pages()))
+@@ -1510,7 +1511,7 @@ static void __vunmap(const void *addr, int deallocate_pages)
+ 	kfree(area);
+ 	return;
+ }
+- 
++
+ /**
+  *	vfree  -  release memory allocated by vmalloc()
+  *	@addr:		memory base address
+@@ -1524,7 +1525,7 @@ static void __vunmap(const void *addr, int deallocate_pages)
+  *	conventions for vfree() arch-depenedent would be a really bad idea)
+  *
+  *	NOTE: assumes that the object at *addr has a size >= sizeof(llist_node)
+- *	
++ *
+  */
+ void vfree(const void *addr)
+ {
+@@ -1677,6 +1678,7 @@ void *__vmalloc_node_range(unsigned long size, unsigned long align,
+ 	struct vm_struct *area;
+ 	void *addr;
+ 	unsigned long real_size = size;
++	unsigned long function;
+ 
+ 	size = PAGE_ALIGN(size);
+ 	if (!size || (size >> PAGE_SHIFT) > totalram_pages)
+@@ -1703,7 +1705,9 @@ void *__vmalloc_node_range(unsigned long size, unsigned long align,
+ 	 * structures allocated in the __get_vm_area_node() function contain
+ 	 * references to the virtual address of the vmalloc'ed block.
+ 	 */
+-	kmemleak_alloc(addr, real_size, 3, gfp_mask);
++	function = get_previous_function(1, 1,
++					 (unsigned long)__vmalloc_node_range);
++	kmemleak_alloc(addr, real_size, 3, gfp_mask, function);
+ 
+ 	return addr;
+ 
+-- 
+1.7.1
+
