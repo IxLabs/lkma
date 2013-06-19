@@ -1,7 +1,7 @@
 From 18a23fe9249b11c5097c75dd780b55705a97c7f1 Mon Sep 17 00:00:00 2001
 From: Ghennadi Procopciuc <unix140@gmail.com>
 Date: Tue, 18 Jun 2013 20:12:44 +0300
-Subject: [PATCH 8/8] Update kmemleak tracepoints with @function argument.
+Subject: [PATCH 8/9] Update kmemleak tracepoints with @function argument.
 
 Add couple of lines in 10 source file that will add tracepoints for
 dynamic memory allocation tracing.

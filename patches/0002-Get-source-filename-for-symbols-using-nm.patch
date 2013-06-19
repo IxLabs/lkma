@@ -1,7 +1,7 @@
 From 29827f5c5f0edb2c911ce15bf4ccfe6708c1505d Mon Sep 17 00:00:00 2001
 From: Ghennadi Procopciuc <unix140@gmail.com>
 Date: Tue, 18 Jun 2013 19:58:58 +0300
-Subject: [PATCH 2/8] Get source filename for symbols using nm.
+Subject: [PATCH 2/9] Get source filename for symbols using nm.
 
 For each symbol, use debugging information to try to find a filename
 and line number.

@@ -1,7 +1,7 @@
 From 9e6c1a5d01535300bf846aed59b4e0e81e06bfa4 Mon Sep 17 00:00:00 2001
 From: Ghennadi Procopciuc <unix140@gmail.com>
 Date: Tue, 11 Jun 2013 11:11:19 +0300
-Subject: [PATCH 1/8] Add kallsyms_trie and kallsyms_offsets
+Subject: [PATCH 1/9] Add kallsyms_trie and kallsyms_offsets
 
 Add source file for each symbol defined in kernel as an entry in array
 kallsyms_trie. Offset of nodes from kallsyms_trie are stored in

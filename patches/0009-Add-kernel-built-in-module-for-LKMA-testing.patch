@@ -1,0 +1,98 @@
+From d1a988222cf943636db36520b73f957094e9ea03 Mon Sep 17 00:00:00 2001
+From: Ghennadi Procopciuc <unix140@gmail.com>
+Date: Wed, 19 Jun 2013 10:23:32 +0300
+Subject: [PATCH 9/9] Add kernel built-in module for LKMA testing.
+
+Simplest test module for LKMA, it will allocate memory on demand
+using 3 exported functions, that are wrapped on kmalloc, kzalloc
+and vmalloc.
+---
+ drivers/block/Kconfig            |   11 ++++++++++
+ drivers/block/Makefile           |    1 +
+ drivers/block/lkma_kernel_test.c |   42 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 54 insertions(+), 0 deletions(-)
+ create mode 100644 drivers/block/lkma_kernel_test.c
+
+diff --git a/drivers/block/Kconfig b/drivers/block/Kconfig
+index b81ddfe..3b3a9e6 100644
+--- a/drivers/block/Kconfig
++++ b/drivers/block/Kconfig
+@@ -541,4 +541,15 @@ config BLK_DEV_RSXX
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called rsxx.
+ 
++config LKMA_KERNEL_TEST
++	tristate "LKMA Test Device Driver"
++	help
++	  Simplest test module for LKMA, it will allocate memory
++	  on demand using 3 exported functions, that are wrapped
++	  on kmalloc, kzalloc and vmalloc.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called lkma_kernel_test.
++
++
+ endif # BLK_DEV
+diff --git a/drivers/block/Makefile b/drivers/block/Makefile
+index ca07399..ad2138e 100644
+--- a/drivers/block/Makefile
++++ b/drivers/block/Makefile
+@@ -41,6 +41,7 @@ obj-$(CONFIG_BLK_DEV_RBD)     += rbd.o
+ obj-$(CONFIG_BLK_DEV_PCIESSD_MTIP32XX)	+= mtip32xx/
+ 
+ obj-$(CONFIG_BLK_DEV_RSXX) += rsxx/
++obj-$(CONFIG_LKMA_KERNEL_TEST)	+= lkma_kernel_test.o
+ 
+ nvme-y		:= nvme-core.o nvme-scsi.o
+ swim_mod-y	:= swim.o swim_asm.o
+diff --git a/drivers/block/lkma_kernel_test.c b/drivers/block/lkma_kernel_test.c
+new file mode 100644
+index 0000000..1809528
+--- /dev/null
++++ b/drivers/block/lkma_kernel_test.c
+@@ -0,0 +1,42 @@
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/slab.h>
++
++MODULE_DESCRIPTION("LKMA Test module");
++MODULE_AUTHOR("Ghennadi Procopciuc");
++MODULE_LICENSE("GPL");
++
++static void *lkma_kernel_kmalloc(size_t size, gfp_t flags)
++{
++	return kmalloc(size, flags);
++}
++EXPORT_SYMBOL(lkma_kernel_kmalloc);
++
++static void *lkma_kernel_kzalloc(size_t size, gfp_t flags)
++{
++	return kzalloc(size, flags);
++}
++EXPORT_SYMBOL(lkma_kernel_kzalloc);
++
++static void *lkma_kernel_vmalloc(size_t size, gfp_t flags)
++{
++	return vmalloc(size);
++}
++EXPORT_SYMBOL(lkma_kernel_vmalloc);
++
++static int lkma_kernel_test_init(void)
++{
++	pr_debug("[%s] Module %s loaded\n", THIS_MODULE->name,
++	       THIS_MODULE->name);
++	return 0;
++}
++
++static void lkma_kernel_test_exit(void)
++{
++	pr_debug("[%s] Module %s unloaded\n", THIS_MODULE->name,
++	       THIS_MODULE->name);
++}
++
++module_init(lkma_kernel_test_init);
++module_exit(lkma_kernel_test_exit);
+-- 
+1.7.1
+

@@ -1,7 +1,7 @@
 From d71ad12507f910a911f5d120ac09339b1d2a0676 Mon Sep 17 00:00:00 2001
 From: Ghennadi Procopciuc <unix140@gmail.com>
 Date: Tue, 18 Jun 2013 20:02:45 +0300
-Subject: [PATCH 4/8] Count dynamic memory allocation for kernel modules
+Subject: [PATCH 4/9] Count dynamic memory allocation for kernel modules
 
 Using module_add_memory you can get stats about all memory allocated by
 an kernel module. Each time the @size field from struct module will be

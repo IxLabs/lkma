@@ -1,7 +1,7 @@
 From 854955fd998213eecb957177f988dd304bc89a28 Mon Sep 17 00:00:00 2001
 From: Ghennadi Procopciuc <unix140@gmail.com>
 Date: Tue, 18 Jun 2013 20:01:11 +0300
-Subject: [PATCH 3/8] Add kernel support for kallsyms_trie and kallsyms_offsets
+Subject: [PATCH 3/9] Add kernel support for kallsyms_trie and kallsyms_offsets
 
 ---
  include/linux/kallsyms.h |   26 ++++++

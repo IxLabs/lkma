@@ -1,7 +1,7 @@
 From af77a1670869c7684ef0a3b6c13fe1d21a14a02a Mon Sep 17 00:00:00 2001
 From: Ghennadi Procopciuc <unix140@gmail.com>
 Date: Tue, 18 Jun 2013 20:09:27 +0300
-Subject: [PATCH 6/8] Add additional functionality to kmemleak.
+Subject: [PATCH 6/9] Add additional functionality to kmemleak.
 
 Now kmemleak together with kallsyms can trace every dynamic memory allocation
 from kernel. Every time when kmemleak_alloc is called it will know which

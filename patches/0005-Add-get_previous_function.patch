@@ -1,7 +1,7 @@
 From 12b5928529e53f28515c5f905b2afa7cf1275b9b Mon Sep 17 00:00:00 2001
 From: Ghennadi Procopciuc <unix140@gmail.com>
 Date: Tue, 18 Jun 2013 20:07:27 +0300
-Subject: [PATCH 5/8] Add get_previous_function
+Subject: [PATCH 5/9] Add get_previous_function
 
 Walking on the stack this function returns address of the previous function,
 the caller. The mechanism was borrow from dump_stack.
