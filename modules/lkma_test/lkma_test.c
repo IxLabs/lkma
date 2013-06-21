@@ -368,16 +368,6 @@ static int lkma_test_init(void)
 		return -1;
 	}
 
-    size_t i,j;
-    void *address;
-    for(i = 0 * MB; i < 60 * MB; i += 1 * MB){
-        for(j = i; j < i + 1 * MB; j += KB){
-            klog("Allocating : %zu\n", j);
-            address = vmalloc(j);
-            vfree(address);
-        }
-    }
-#if 0
 	printk(KERN_DEBUG "[%s] Module %s loaded\n", THIS_MODULE->name,
 	       THIS_MODULE->name);
 
@@ -396,7 +386,7 @@ static int lkma_test_init(void)
 	start_test(lkma_vmalloc_var_size);
 
 	start_test(mixed_allocations);
-#endif
+
 	return 0;
 }
 
