@@ -35,7 +35,9 @@ MODULE_LICENSE("GPL");
 #define SYSFS_FILENAME		(THIS_MODULE->name)
 #endif
 
-#define VMALLOC_MAX_SIZE	(300 * 1024 * 1024)
+#define VMALLOC_MAX_SIZE	(300 * MB)
+#undef KMALLOC_MAX_SIZE
+#define KMALLOC_MAX_SIZE	(4 * MB)
 #define DEFAULT_FLAGS_ID	0
 
 #define NUM_ALLOCATION		array_size(allocators)
@@ -180,12 +182,7 @@ static ssize_t test(char *m,
 {
 
 	unsigned long long time;
-	size_t mb, kb, b;
 	int padding = 0;
-
-	mb = get_mb(size);
-	kb = get_kb(size);
-	b = get_b(size);
 
 	time = generic_lkma_alloc(alloc, size, DEFAULT_FLAGS_ID);
 
@@ -229,8 +226,11 @@ static ssize_t lkma_tests(struct kobject *kobj, struct kobj_attribute *attr,
 
 	for (i = allocator_id; i < allocator_id + NUM_ALLOCATION / 2; i++) {
 #if LKMA_PROCFS
+		if (allocators[i].max_size < lower_limit)
+			continue;
+
 		limit = min(allocators[i].max_size, upper_limit);
-		start = min(allocators[i].max_size, lower_limit);
+		start = lower_limit;
 #else
 		if (test_offset.start != -1) {
 			start = test_offset.start;
@@ -239,8 +239,11 @@ static ssize_t lkma_tests(struct kobject *kobj, struct kobj_attribute *attr,
 			test_offset.start = -1;
 			test_offset.limit = -1;
 		} else {
+			if (allocators[i].max_size < lower_limit)
+				continue;
+
 			limit = min(allocators[i].max_size, upper_limit);
-			start = min(allocators[i].max_size, lower_limit);
+			start = lower_limit;
 		}
 #endif
 
