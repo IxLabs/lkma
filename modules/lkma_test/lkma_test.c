@@ -3,6 +3,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/list.h>
+#include <linux/net.h>
 
 MODULE_DESCRIPTION("LKMA Test suite");
 MODULE_AUTHOR("Ghennadi Procopciuc");
@@ -16,6 +17,9 @@ MODULE_LICENSE("GPL");
 
 #define VMALLOC_MAX_SIZE	300 * 1024 * 1024
 #define DEFAULT_FLAGS_ID	0
+
+#define KB 1024
+#define MB 1024 * KB
 
 #define NUM_ALLOCATION	  	array_size(lkma_alloc_func)
 
@@ -364,6 +368,16 @@ static int lkma_test_init(void)
 		return -1;
 	}
 
+    size_t i,j;
+    void *address;
+    for(i = 0 * MB; i < 60 * MB; i += 1 * MB){
+        for(j = i; j < i + 1 * MB; j += KB){
+            klog("Allocating : %zu\n", j);
+            address = vmalloc(j);
+            vfree(address);
+        }
+    }
+#if 0
 	printk(KERN_DEBUG "[%s] Module %s loaded\n", THIS_MODULE->name,
 	       THIS_MODULE->name);
 
@@ -382,7 +396,7 @@ static int lkma_test_init(void)
 	start_test(lkma_vmalloc_var_size);
 
 	start_test(mixed_allocations);
-
+#endif
 	return 0;
 }
 
